@@ -1,0 +1,9 @@
+Example_Data
+.idea
+.ipynb_checkpoints
+image_results
+ZHAOXI-FCS2.0
+__pycache__
+
+*.png
+*.svg
