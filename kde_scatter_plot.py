@@ -20,10 +20,10 @@ from scipy.stats import gaussian_kde, binned_statistic, linregress
 # […]
 
 # Own modules
-# sys.path.append(r'D:\python_code\toggle_mini')
-# import sciplot as splt
-#
-# splt.whitegrid()
+
+import sciplot as splt
+
+splt.whitegrid()
 
 
 def kde_plot(xy: np.ndarray, binstep: float = .2, axes: plt.axes = None) -> plt.Figure:
