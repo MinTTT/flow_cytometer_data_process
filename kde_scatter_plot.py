@@ -17,9 +17,6 @@ import pandas as pd
 import numpy as np  # Or any other
 from scipy.stats import gaussian_kde, binned_statistic, linregress
 
-# […]
-
-# Own modules
 
 import sciplot as splt
 
