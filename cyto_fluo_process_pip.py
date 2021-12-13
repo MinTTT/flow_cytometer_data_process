@@ -44,17 +44,17 @@ def iter_sample(unsort):
 
 
 # %%
-dir = r'E:\Fu_lab_Data\cytometer data\20210616\exprt_20210616'
+dir = r'F:\New folder\Exp_20211207_1'
 
 tube_dic = utl.parallel_process_fsc(dir)
 tube_name = list(tube_dic.keys())
 tube_name.sort()
-name_iter = iter_sample(tube_name)
-tube_name = [na for na in name_iter]
+# name_iter = iter_sample(tube_name)
+# tube_name = [na for na in name_iter]
 data_list = []
 for name in tube_name:
     data_frame = tube_dic[name].statistic
-    fluo_row = data_frame.loc['FLU-H']
+    fluo_row = data_frame.loc['Green-H']
     data_list.append(fluo_row.to_list() + [name])
 
 columns_na = list(fluo_row.index) + ['Tube_name']
