@@ -16,8 +16,9 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np  # Or any other
 from scipy.stats import gaussian_kde, binned_statistic, linregress
-
+from scipy.stats import rv_histogram as rv_hist
 import sciplot as splt
+from typing import Dict
 
 splt.whitegrid()
 
@@ -66,6 +67,58 @@ def kde_plot(xy: np.ndarray, binstep: float = None, axes: plt.axes = None, **kwa
     ax.grid(False)
 
     return ax
+
+
+def hist_sample(sample_data: Dict, bins_num=100, log=True, stat_key=None, xlim=None):
+    """
+    plot hist
+    """
+    list_tube_name = list(sample_data.keys())
+    axe_num = len(list_tube_name)
+    fig_width = 18
+    sig_height = fig_width / 4
+    fig_height = sig_height * axe_num
+
+    fig, axes = plt.subplots(axe_num, 1, sharex=True, figsize=(fig_width, fig_height))
+    fig.subplots_adjust(hspace=0)
+    data_lim = [.1, -1]
+    for index, ax in enumerate(axes):
+        if stat_key is not None:
+            data = sample_data[list_tube_name[index]][stat_key]
+        else:
+            data = sample_data[list_tube_name[index]]
+
+        data = data[data > 0]
+        data_min, data_max = data.min(), data.max()
+        if data_min <= 0:
+            data_min = 0.1
+        if data_min < data_lim[0]:
+            data_lim[0] = data_min
+        if data_max > data_lim[-1]:
+            data_lim[-1] = data_max
+
+        if log is True:
+            bin_range = np.logspace(np.log10(data_lim[0] * .1), np.log10(data_lim[-1] * 1000), bins_num)
+            n, bins, patch = ax.hist(data, bins=bin_range, alpha=.5, color='#A6D4FF', histtype='stepfilled')
+        else:
+            bin_range = np.linspace(*data_lim, num=500)
+            n, bins, patch = ax.hist(data, bins=bins_num, alpha=.5, color='#A6D4FF', histtype='stepfilled')
+
+        # hist_of_data = rv_hist((n, bins))
+        # ax.plot(bin_range, hist_of_data.pdf(bin_range), color='#8EBAD9')
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        else:
+            ax.set_xlim(data_lim)
+        if log:
+            ax.set_xscale('log')
+    for index, ax in enumerate(axes):
+        x_range = ax.get_xlim()
+        y_range = ax.get_ylim()
+        ax.text(x_range[0] * 1.1, y_range[-1] * 0.8, s=f'{list_tube_name[index]}')
+    fig.supylabel('Cell count')
+    fig.supxlabel('Fluorescent intensity (a.u.)')
+    return fig
 
 
 # %%

@@ -3,7 +3,6 @@
 Parser for FCS 2.0, 3.0, 3.1 files. Python 2/3 compatible.
 `
 Distributed under the MIT License.
-
 Useful documentation for dtypes in numpy
 http://docs.scipy.org/doc/numpy/reference/generated/numpy.ndarray.byteswap.html?highlight=byteswap#numpy.ndarray.byteswap  # noqa
 http://docs.scipy.org/doc/numpy/user/basics.types.html
@@ -11,57 +10,121 @@ http://docs.scipy.org/doc/numpy/reference/arrays.dtypes.html
 """
 from __future__ import division
 
+import contextlib
+import logging
 from io import BytesIO
 import string
 import sys
 import warnings
-import contextlib
-import logging
 
 import numpy
-
-try:
-    import pandas as pd
-except ImportError:
-    pd = None
-    warnings.warn(u'pandas is not installed, so the parse_fcs function can only be used together '
-                  u'with numpy.')
+import pandas as pd
+import six
 
 logger = logging.getLogger(__name__)
 
 
 def fromfile(file, dtype, count, *args, **kwargs):
     """Wrapper around np.fromfile to support any file-like object."""
+
+    # to understand this function, you must understand the difference
+    # between a numpy *record* and a numpy *field*.  a *record* is
+    # composed of a number of *fields*, each of which may be a different
+    # dtype.  for example, if we were encoding a list of two-dimensional
+    # points on a plane, each point would be represented by a record
+    # containing two fields, each of which was a four-byte float
+    # represented by the dtype 'f4'.  thus, the record would be
+    # specified by dtype("f4, f4").
+
+    # numpy's functions expect all field widths to be a power of two
+    # (because this is how such things are stored in memory.)
+    # unfortunately, some pathological cytometers don't make their
+    # records a power-of-two wide.  For example, a Cytek xP5 encodes
+    # records in their DATA segment in three-byte-wide integers --
+    # this comes in as a dtype of "i3", which makes numpy freak out.
+
+    # To address this, we convert the requested dtype so that each
+    # record is read as a series of one-byte-wide unsigned integers
+    # ('u1'), pad out each record with NUL bytes until it is
+    # a power-of-two wide, then re-convert it to the requested
+    # dtype (but with a power-of-two width) and return it.
+
+    # what dtypes were we asked for?
+    dtypes = dtype.split(',')
+    field_widths = []
+
+    # how wide is each dtype?
+    for dt in dtypes:
+        num_bytes = int(dt[2:])
+        field_widths.append(num_bytes)
+
+    # how many bytes wide is the total record?
+    record_width = sum(field_widths)
+
+    # read the DATA segment into a 1 x `count` array of records.
+    # each record has a number of `u1` (one-byte unsigned integers)
+    # equal to `record_width`.
     try:
-        return numpy.fromfile(file, dtype=dtype, count=count, *args, **kwargs)
+        ret = numpy.fromfile(file,
+                             dtype=",".join(['u1'] * record_width),
+                             count=count,
+                             *args,
+                             **kwargs)
     except (TypeError, IOError):
-        return numpy.frombuffer(file.read(count * numpy.dtype(dtype).itemsize),
-                                dtype=dtype, count=count, *args, **kwargs)
+        ret = numpy.frombuffer(file.read(count * record_width),
+                               dtype=",".join(['u1'] * record_width),
+                               count=count,
+                               *args,
+                               **kwargs)
+
+    # convert the DATA segment from a 1 x `count` array of records
+    # (and remember, each record is composed of `record_width`
+    # 1-byte unsigned ints) to a `record_width` x `count` array of
+    # 'u1' unsigned ints.
+    ret = ret.view('u1').reshape((count, record_width))
+
+    # now, for each requested dtype.....
+    ret_dtypes = []
+    for field_idx, dt in enumerate(dtypes):
+        dtype_type = dt[1]
+        dtype_endian = dt[0]
+        num_bytes = int(dt[2:])
+
+        # num_bytes & (num_bytes - 1) is 0 IFF num_bytes is a power of two
+        # while num_bytes is NOT a power of two....
+        while num_bytes & (num_bytes - 1) != 0:
+            # ...insert another COLUMN of NUL bytes at the front of the field....
+            ret = numpy.insert(ret, sum(field_widths[0:field_idx]), numpy.zeros(count), axis=1)
+
+            # ....and increment the number of bytes for this field.
+            num_bytes = num_bytes + 1
+
+        # when we've got a field that's a power-of-two wide, append that field's
+        # dtype to the list of record dtypes we're going to return
+        ret_dtypes.append(dtype_endian + dtype_type + str(num_bytes))
+
+    # now, "cast" the newly padded array as the desired data types,
+    # and return it.
+    return ret.view(','.join(ret_dtypes)).ravel()
 
 
 class ParserFeatureNotImplementedError(Exception):
     """Raise when encountering fcs files for which parsing hasn't been implemented."""
-    pass
 
 
 class FCSParser(object):
-    def __init__(self, path=None, read_data=True, channel_naming='$PnS', data_set=0):
+    def __init__(self, path=None, read_data=True, channel_naming='$PnS', data_set=0, encoding='utf-8'):
         """Parse FCS files.
-
         Compatible with most FCS 2.0, 3.0, 3.1 files.
-
         self.annotation: a dictionary holding the parsed content of the TEXT segment
                          In addition, a key called __header__ has been added to this dictionary
                          It specifies the information parsed from the FCS file HEADER segment.
                          (This won't be necessary for most users.)
-
         self.data holds the parsed DATA segment
         self.analysis holds the ANALYSIS segment as read from the file.
-
         After the data segment is read:
             self.channel_names holds the chosen names of the channels
             self.channel_names_alternate holds the alternate names of the channels
-
         Args:
             path : str
                 Path of .fcs file
@@ -70,25 +133,24 @@ class FCSParser(object):
                 Otherwise, use read_data method to read in the data from the fcs file.
             channel_naming: '$PnS' | '$PnN'
                 Determines which meta data field is used for naming the channels.
-
                 The default should be $PnS (even though it is not guaranteed to be unique)
-
                 $PnN stands for the short name (guaranteed to be unique).
                     Will look like 'FL1-H'
                 $PnS stands for the actual name (not guaranteed to be unique).
                     Will look like 'FSC-H' (Forward scatter)
-
                 The chosen field will be used to population self.channels.
-
                 If the chosen field does not exist in the fcs file.
                 The program attempts to use the alternative field by default.
-
                 Note: These names are not flipped in the implementation.
                 It looks like they were swapped for some reason in the official FCS specification.
             data_set: int
                 Index of retrieved data set in the fcs file.
-                This value specifies the data set being retrieved from an fcs file with multple data sets.
+                This value specifies the data set being retrieved from an fcs file with
+                multiple data sets.
+            encoding: str
+                Specify encoding of the text section of the fcs data
         """
+        self._encoding = encoding
         self._data = None
         self._channel_naming = channel_naming
         self.channel_names_s = []
@@ -105,15 +167,14 @@ class FCSParser(object):
             raise ValueError(u'channel_naming must be either "$PnN" or "$PnS"')
 
         self.annotation = {}
-
         self.path = path
 
         if path:
             with open(path, 'rb') as f:
-                self.load_file(f, data_set, read_data)
+                self.load_file(f, data_set=data_set, read_data=read_data)
 
     def load_file(self, file_handle, data_set=0, read_data=True):
-        """"""
+        """Load the requested parts of the file into memory."""
         file_handle.seek(0, 2)
         self._file_size = file_handle.tell()
         file_handle.seek(0)
@@ -132,7 +193,7 @@ class FCSParser(object):
                     break
             else:
                 if data_segments != 0:
-                    warnings.warn("File does not contain $NEXTDATA information.")
+                    warnings.warn('File does not contain $NEXTDATA information.')
                 break
         if read_data:
             self.read_data(file_handle)
@@ -140,10 +201,8 @@ class FCSParser(object):
     @classmethod
     def from_data(cls, data):
         """Load an FCS file from a bytes-like object.
-
         Args:
             data: buffer containing contents of an FCS file.
-
         Returns:
             FCSParser instance with data loaded
         """
@@ -154,10 +213,8 @@ class FCSParser(object):
 
     def read_header(self, file_handle, nextdata_offset=0):
         """Read the header of the FCS file.
-
         The header specifies where the annotation, data and analysis are located inside the binary
         file.
-
         Args:
             file_handle: buffer containing FCS file.
             nextdata_offset: byte offset of a set header from file start specified by $NEXTDATA
@@ -166,17 +223,23 @@ class FCSParser(object):
 
         file_handle.read(4)  # 4 space characters after the FCS format
 
-        for field in ['text start', 'text end', 'data start', 'data end', 'analysis start',
-                      'analysis end']:
+        for field in ('text start', 'text end', 'data start', 'data end', 'analysis start',
+                      'analysis end'):
             s = file_handle.read(8)
             try:
                 field_value = int(s)
             except ValueError:
                 field_value = 0
             header[field] = field_value + nextdata_offset
+        # In some .fcs files, 'text end' and 'data start' are equal, e.g.,
+        # http://flowrepository.org/experiments/2241/download_ziped_files
+        # and this would lead to a mistake when run @_extract_text_dict
+        # We should avoid this situation.
+        if header['text end'] == header['data start']:
+            header['text end'] = header['text end'] - 1
 
         # Checking that the location of the TEXT segment is specified
-        for k in ['text start', 'text end']:
+        for k in ('text start', 'text end'):
             if header[k] == 0:
                 raise ValueError(u'The FCS file "{}" seems corrupted. (Parser cannot locate '
                                  u'information about the "{}" segment.)'.format(self.path, k))
@@ -196,9 +259,47 @@ class FCSParser(object):
 
         self.annotation['__header__'] = header
 
+    @staticmethod
+    def _extract_text_dict(raw_text):
+        """Parse the TEXT segment of the FCS file into a python dictionary."""
+        delimiter = raw_text[0]
+
+        if raw_text[-1] != delimiter:
+            # Avoid stripping whitespace delimiter
+            if delimiter.strip() == delimiter:
+                raw_text = raw_text.strip()
+            if raw_text[-1] != delimiter:
+                msg = (u'The first two characters were:\n {}. The last two characters were: {}\n'
+                       u'Parser expects the same delimiter character in beginning '
+                       u'and end of TEXT segment. '
+                       u'This file may be parsed incorrectly!'.format(raw_text[:2], raw_text[-2:]))
+                warnings.warn(msg)
+                raw_text = raw_text[1:]
+            else:
+                raw_text = raw_text[1:-1]
+        else:
+            raw_text = raw_text[1:-1]
+
+        # 1:-1 above removes the first and last characters which are reserved for the delimiter.
+
+        # The delimiter is escaped by being repeated (two consecutive delimiters). This code splits
+        # on the escaped delimiter first, so there is no need for extra logic to distinguish
+        # actual delimiters from escaped delimiters.
+        nested_split_list = [x.split(delimiter) for x in raw_text.split(delimiter * 2)]
+
+        # Flatten the nested list to a list of elements (alternating keys and values)
+        raw_text_elements = nested_split_list[0]
+        for partial_element_list in nested_split_list[1:]:
+            # Rejoin two parts of an element that was split by an escaped delimiter (the end and
+            # start of two successive sub-lists in nested_split_list)
+            raw_text_elements[-1] += (delimiter + partial_element_list[0])
+            raw_text_elements.extend(partial_element_list[1:])
+
+        keys, values = raw_text_elements[0::2], raw_text_elements[1::2]
+        return dict(zip(keys, values))
+
     def read_text(self, file_handle):
         """Parse the TEXT segment of the FCS file.
-
         The TEXT segment contains meta data associated with the FCS file.
         Converting all meta keywords to lower case.
         """
@@ -210,29 +311,15 @@ class FCSParser(object):
         file_handle.seek(header['text start'], 0)
         raw_text = file_handle.read(header['text end'] - header['text start'] + 1)
         try:
-            raw_text = raw_text.decode('utf-8')
+            raw_text = raw_text.decode(self._encoding)
         except UnicodeDecodeError as e:
+            # Catching the exception and logging it in this way kills the traceback, but
+            # we can worry about this later.
             logger.warning(u'Encountered an illegal utf-8 byte in the header.\n Illegal utf-8 '
-                           u'characters will be ignored.\n The illegal byte was {} at '
-                           u'position {}.'.format(repr(e.object[e.start]), e.start))
-            raw_text = raw_text.decode('utf-8', 'ignore')
+                           u'characters will be ignored.\n{}'.format(e))
+            raw_text = raw_text.decode(self._encoding, errors='ignore')
 
-        #####
-        # Parse the TEXT segment of the FCS file into a python dictionary
-        delimiter = raw_text[0]
-
-        if raw_text[-1] != delimiter:
-            raw_text = raw_text.strip()
-            if raw_text[-1] != delimiter:
-                msg = (u'The first two characters were:\n {}. The last two characters were: {}\n'
-                       u'Parser expects the same delimiter character in beginning '
-                       u'and end of TEXT segment'.format(raw_text[:2], raw_text[-2:]))
-                raise ParserFeatureNotImplementedError(msg)
-
-        # Below 1:-1 used to remove first and last characters which should be reserved for delimiter
-        raw_text_segments = raw_text[1:-1].split(delimiter)
-        keys, values = raw_text_segments[0::2], raw_text_segments[1::2]
-        text = {key: value for key, value in zip(keys, values)}  # build dictionary
+        text = self._extract_text_dict(raw_text)
 
         ##
         # Extract channel names and convert some of the channel properties
@@ -240,7 +327,7 @@ class FCSParser(object):
         # Note: do not use regular expressions for manipulations here.
         # Regular expressions are too heavy in terms of computation time.
         pars = int(text['$PAR'])
-        if '$P0B' in keys:  # Checking whether channel number count starts from 0 or from 1
+        if '$P0B' in text.keys():  # Checking whether channel number count starts from 0 or from 1
             self.channel_numbers = range(0, pars)  # Channel number count starts from 0
         else:
             self.channel_numbers = range(1, pars + 1)  # Channel numbers start from 1
@@ -281,10 +368,8 @@ class FCSParser(object):
 
     def read_analysis(self, file_handle):
         """Read the ANALYSIS segment of the FCS file and store it in self.analysis.
-
         Warning: This has never been tested with an actual fcs file that contains an
         analysis segment.
-
         Args:
             file_handle: buffer containing FCS data
         """
@@ -307,7 +392,7 @@ class FCSParser(object):
         if '$P0B' in keys:
             raise ParserFeatureNotImplementedError(u'Not expecting a parameter starting at 0')
 
-        if text['$BYTEORD'] not in ["1,2,3,4", "4,3,2,1", "1,2", "2,1"]:
+        if text['$BYTEORD'] not in ['1,2,3,4', '4,3,2,1', '1,2', '2,1']:
             raise ParserFeatureNotImplementedError(u'$BYTEORD {} '
                                                    u'not implemented'.format(text['$BYTEORD']))
 
@@ -384,11 +469,26 @@ class FCSParser(object):
         ##
         # Read in the data
         if len(set(par_numeric_type_list)) > 1:
-            # values saved in mixed data formats
+            # This branch deals with files in which the different columns (channels)
+            # were encoded with different types; i.e., a mixed data format.
             dtype = ','.join(par_numeric_type_list)
             data = fromfile(file_handle, dtype, num_events)
+
+            # The dtypes in the numpy array `data` above are associated with both a name
+            # and a type; i.e.,
+            # https://docs.scipy.org/doc/numpy/reference/generated/numpy.recarray.html
+            # The names are assigned automatically.
+            # In order for this code to work correctly with the pandas DataFrame constructor,
+            # we convert the *names* of the dtypes to the channel names we want to use.
+
             names = self.get_channel_names()
-            data.dtype.names = tuple([name.encode('ascii', errors='replace') for name in names])
+
+            if six.PY2:
+                encoded_names = [name.encode('ascii', errors='replace') for name in names]
+            else:  # Assume that python3 or older then.
+                encoded_names = [name for name in names]
+
+            data.dtype.names = tuple(encoded_names)
         else:
             # values saved in a single data format
             dtype = par_numeric_type_list[0]
@@ -401,6 +501,25 @@ class FCSParser(object):
         if endian != native_code:
             # swaps the actual bytes and also the endianness
             data = data.byteswap().newbyteorder()
+
+        # Mask off high bits if integer type data
+        if text["$DATATYPE"] == "I":
+            if len(set(par_numeric_type_list)) > 1:
+                for channel_number in self.channel_numbers:
+                    valid_bits = numpy.ceil(numpy.log2(float(text["$P{0}R".format(channel_number)])))
+
+                    if bytes_per_par_list[channel_number - 1] * 8 == valid_bits:
+                        continue
+
+                    name = data.dtype.names[channel_number - 1]
+                    bitmask = numpy.array([2 ** valid_bits - 1], dtype=data[name].dtype)
+                    data[name] = data[name] & bitmask
+            else:
+                valid_bits_per_par_list = numpy.array([
+                    2 ** numpy.ceil(numpy.log2(float(text["$P{0}R".format(i)]))) - 1
+                    for i in self.channel_numbers
+                ], dtype=data.dtype)
+                data &= valid_bits_per_par_list
 
         self._data = data
 
@@ -422,7 +541,6 @@ class FCSParser(object):
 
     def reformat_meta(self):
         """Collect the meta data information in a more user friendly format.
-
         Function looks through the meta data, collecting the channel related information into a
         dataframe and moving it into the _channels_ key.
         """
@@ -468,29 +586,24 @@ class FCSParser(object):
         return pd.DataFrame(data, columns=channel_names)
 
 
-def parse(path, meta_data_only=False, output_format='DataFrame', compensate=False,
-          channel_naming='$PnS', reformat_meta=False, data_set=0):
+def parse(path, meta_data_only=False, compensate=False, channel_naming='$PnS',
+          reformat_meta=False, data_set=0, dtype='float32', encoding="utf-8"):
     """Parse an fcs file at the location specified by the path.
-
     Parameters
     ----------
     path: str
         Path of .fcs file
     meta_data_only: bool
         If True, the parse_fcs only returns the meta_data (the TEXT segment of the FCS file)
-    output_format: 'DataFrame' | 'ndarray'
-        If set to 'DataFrame' the returned
+    compensate: bool, reserved parameter to indicate whether the  FCS data should be compensated, unimplemented.
     channel_naming: '$PnS' | '$PnN'
         Determines which meta data field is used for naming the channels.
         The default should be $PnS (even though it is not guaranteed to be unique)
-
         $PnN stands for the short name (guaranteed to be unique).
             Will look like 'FL1-H'
         $PnS stands for the actual name (not guaranteed to be unique).
             Will look like 'FSC-H' (Forward scatter)
-
         The chosen field will be used to population self.channels
-
         Note: These names are not flipped in the implementation.
         It looks like they were swapped for some reason in the official FCS specification.
     reformat_meta: bool
@@ -498,8 +611,14 @@ def parse(path, meta_data_only=False, output_format='DataFrame', compensate=Fals
         into a DataFrame and moved into the '_channels_' key
     data_set: int
         Index of retrieved data set in the fcs file.
-        This value specifies the data set being retrieved from an fcs file with multple data sets.
-
+        This value specifies the data set being retrieved from an fcs file with multiple data sets.
+    dtype: str | None
+        If provided, will force convert all data into this dtype.
+        This is set by default to auto-convert to float32 to deal with cases in which the original
+        data has been stored using a smaller data type (e.g., unit8). This modifies the original
+        data, but should make follow up analysis safer in basically all cases.
+    encoding: str
+        Provide encoding type of the text section.
     Returns
     -------
     if meta_data_only is True:
@@ -509,36 +628,28 @@ def parse(path, meta_data_only=False, output_format='DataFrame', compensate=Fals
         a 2-tuple with
             the first element the meta_data (dictionary)
             the second element the data (in either DataFrame or numpy format)
-
     Examples
     --------
     fname = '../tests/data/EY_2013-05-03_EID_214_PID_1120_Piperacillin_Well_B7.001.fcs'
     meta = parse_fcs(fname, meta_data_only=True)
-    meta, data_pandas = parse_fcs(fname, meta_data_only=False, output_format='DataFrame')
-    meta, data_numpy  = parse_fcs(fname, meta_data_only=False, output_format='ndarray')
+    meta, data_pandas = parse_fcs(fname, meta_data_only=False)
     """
     if compensate:
         raise ParserFeatureNotImplementedError(u'Compensation has not been implemented yet.')
 
-    if reformat_meta or (output_format == 'DataFrame'):
-        if pd is None:
-            raise ImportError(u'You do not have pandas installed.')
-
     read_data = not meta_data_only
 
-    parsed_fcs = FCSParser(path, read_data=read_data, channel_naming=channel_naming, data_set=data_set)
+    fcs_parser = FCSParser(path, read_data=read_data, channel_naming=channel_naming,
+                           data_set=data_set, encoding=encoding)
 
     if reformat_meta:
-        parsed_fcs.reformat_meta()
+        fcs_parser.reformat_meta()
 
-    meta = parsed_fcs.annotation
+    meta = fcs_parser.annotation
 
     if meta_data_only:
         return meta
-    elif output_format == 'DataFrame':
-        return meta, parsed_fcs.dataframe
-    elif output_format == 'ndarray':
-        # Constructs numpy matrix
-        return meta, parsed_fcs.data
-    else:
-        raise ValueError(u'The output_format must be either "ndarray" or "DataFrame".')
+    else:  # Then include both meta and dataframe.
+        df = fcs_parser.dataframe
+        df = df.astype(dtype) if dtype else df
+        return meta, df

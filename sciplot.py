@@ -1,10 +1,3 @@
-"""
-@author: CHU Pan
-@emial: pan_chu@outlook.com
-"""
-
-
-
 import matplotlib as mpl
 import numpy as np
 import seaborn as sns
@@ -27,17 +20,18 @@ def ggplot():
 def whitegrid():
     mpl.style.use('seaborn-whitegrid')
     mpl.rcParams['figure.autolayout'] = True
-
-    mpl.rcParams['lines.linewidth'] = 5  # lines 对象的粗细，plot等图中的线条粗细
-    mpl.rcParams['axes.edgecolor'] = 'black'
-    mpl.rcParams['font.family'] = 'Arial'  # 全局字体大小
-
-    mpl.rcParams['font.size'] = 25  # 全局字体大小
-    mpl.rcParams['font.weight'] = 'bold'
-
-    mpl.rcParams['axes.linewidth'] = 4  # 子图边框粗细
     mpl.rcParams['figure.subplot.wspace'] = 0.4  # 子图之间宽度，<1
     mpl.rcParams['figure.subplot.hspace'] = 0.4  # 子图之间高度，<1
+
+
+    mpl.rcParams['axes.edgecolor'] = 'black'
+    mpl.rcParams['axes.linewidth'] = 6  # 子图边框粗细
+
+    mpl.rcParams['font.family'] = 'Arial'  # 全局字体大小
+    mpl.rcParams['font.size'] = 35  # 全局字体大小
+    mpl.rcParams['font.weight'] = 'bold'
+
+    mpl.rcParams['lines.linewidth'] = 10  # lines 对象的粗细，plot等图中的线条粗细
     mpl.rcParams['font.family'] = 'serif'
     mpl.rcParams['lines.markersize'] = 16.0  # marker size
     mpl.rcParams['xtick.major.size'] = 18  # xtick major length
@@ -51,8 +45,9 @@ def whitegrid():
     mpl.rcParams['ytick.direction'] = 'out'  # ytick length
     mpl.rcParams['ytick.minor.width'] = 5
     mpl.rcParams['ytick.major.width'] = 5
-    mpl.rcParams['figure.figsize'] = (11, 11)
+    mpl.rcParams['figure.figsize'] = (8, 8)
     mpl.rcParams['axes.labelweight'] = 'bold'
+    mpl.rcParams['axes.grid'] = False
 
 
 def twoaxiserrorbar(x, y, hues, data):
@@ -97,3 +92,19 @@ class MathTextSciFormatter(mticker.Formatter):
         else:
             s = r'%s%s' % (significand, exponent)
         return "${}$".format(s)
+
+
+def aspect_ratio(ratio, ax=None):
+    if ax is None:
+        ax = plt.gca()
+    scale_x = ax.get_xscale()
+    xmin, xmax = ax.get_xlim()
+
+    scale_y = ax.get_yscale()
+    ymin, ymax = ax.get_ylim()
+    if scale_x == 'log':
+        xmin, xmax = np.log((xmin, xmax))
+    if scale_y == 'log':
+        ymin, ymax = np.log((ymin, ymax))
+    ax.set_aspect(ratio * np.ptp([xmin, xmax])/np.ptp([ymin, ymax]))
+    return None

@@ -1,12 +1,13 @@
 import os
 import numpy as np
-import api
+# import api
 import matplotlib.pyplot as plt
 from sklearn import mixture
 import pandas as pd
 from joblib import Parallel, delayed
-import fcswrite as fcwr
-from typing import Optional
+import flowio
+import FlowCal
+from typing import Optional, Dict, Union
 
 
 def split(a, n):
@@ -14,28 +15,20 @@ def split(a, n):
     return (a[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n))
 
 
-# ======================= Old Date =========================================================
-# def processing(tn, dic, thre=-25):
-#     da1 = dic[tn]
-#     data_comp = da1[['FSC-H', 'FSC-Width', 'SSC-H']]
-#     data_comp.insert(len(data_comp.columns), 'SSC-W', da1['SSC-A'] / da1['SSC-H'])
-#     data_comp = data_comp.dropna(axis=0, how='any')
-#     gmm = mixture.GaussianMixture(n_components=2, reg_covar=10e-4).fit(data_comp)
-#     # posteriors = gmm.predict_proba(data_comp)
-#     scores = gmm.score_samples(data_comp)
-#     mask = scores > thre
-#     data_trim = da1.iloc[data_comp[mask].index]
-#     gfp_mean_h = data_trim['FITC-H'].mean() / data_trim['FSC-H'].mean()
-#     gfp_mean_a = data_trim['FITC-A'].mean() / data_trim['FSC-A'].mean()
-#     gfp_ind_h = data_trim['FITC-H'] / data_trim['FSC-H']
-#     gfp_ind_a = data_trim['FITC-A'] / data_trim['FSC-A']
-#     gfp_ind_h_mean = np.mean(gfp_ind_h)
-#     gfp_ind_a_mean = np.mean(gfp_ind_a)
-#     # data_trim['FLU-H'] = gfp_ind_h
-#     # data_trim['FLU-A'] = gfp_ind_a
-#     data_trim.insert(len(data_trim.columns), 'FLU-H', gfp_ind_h)
-#     data_trim.insert(len(data_trim.columns), 'FLU-A', gfp_ind_a)
-#     return data_trim, [gfp_mean_h, gfp_mean_a, gfp_ind_h_mean, gfp_ind_a_mean]
+def parse_fcs(data_ps):
+
+    tube = flowio.FlowData(data_ps, ignore_offset_error=True)
+    tube_raw_data = np.reshape(tube.events, (-1, tube.channel_count))
+    # channel_names = [tube.channels[channel_key]['PnS'] for channel_key in list(tube.channels.keys())]
+    channel_names = []
+    for channel_key in list(tube.channels.keys()):
+        try:
+            channel_names.append(tube.channels[channel_key]['PnS'])
+        except KeyError:
+            channel_names.append(tube.channels[channel_key]['PnN'])
+    tube_df = pd.DataFrame(data=tube_raw_data, columns=channel_names)
+
+    return tube_df
 
 
 class CytoTube():
@@ -57,7 +50,7 @@ class CytoTube():
         if self._tube_ps is None:
             raise FileNotFoundError('Please check the file path.')
 
-        self._raw_data = api.FCSParser(path=ps).dataframe  # read file
+        self._raw_data = parse_fcs(ps)  # read file
         self.channels = self._raw_data.columns.to_list()
         self._lasso_mask = None
         self._score = None
@@ -76,6 +69,10 @@ class CytoTube():
         if ('FITC-A' in self.channels) and ('FSC-A' in self.channels):
             self._raw_data.insert(len(self._raw_data.columns), 'Green-A',
                                   self._raw_data['FITC-A'] / self._raw_data['FSC-A'] * 1000.)
+        if ('ECD-H' in self.channels) and ('FSC-H' in self.channels):
+            self._raw_data.insert(len(self._raw_data.columns), 'Red-H',
+                                  self._raw_data['ECD-H'] / self._raw_data['FSC-H'] * 1000.)
+        return None
 
     def gate(self, threshold=None):
 
@@ -157,7 +154,7 @@ class CytoTube():
     # def add_channel(self):
 
 
-def parallel_process_fsc(data_path: str):
+def parallel_process_fsc(data_path: str, file_list=None):
     def process_func(obj: CytoTube):
         obj.new_stat()
         obj.gate()
@@ -165,11 +162,13 @@ def parallel_process_fsc(data_path: str):
 
     all_fcs_list = [f.name for f in os.scandir(path=data_path)
                     if (f.is_file() and f.name[-3:] == 'fcs')]  # capture file name
+    if file_list is not None:
+        tube_names = [file_na.strip('.fcs') for file_na in file_list if file_na in all_fcs_list]
+    else:
+        tube_names = [name.strip('.fcs') for name in all_fcs_list]
 
-    tube_names = [name.strip('.fcs') for name in all_fcs_list]
-
-    tube_data_dic = {tube_names[i]: CytoTube(os.path.join(data_path, file_name), name=tube_names[i])
-                     for i, file_name in enumerate(all_fcs_list)}
+    tube_data_dic = {tube_names[i]: CytoTube(os.path.join(data_path, f'{file_name}.fcs'), name=tube_names[i])
+                     for i, file_name in enumerate(tube_names)}
 
     _ = Parallel(n_jobs=-1, require='sharedmem')(
         delayed(process_func)(tube_data_dic[tube_name]) for tube_name in tube_names)
@@ -180,16 +179,35 @@ def parallel_process_fsc(data_path: str):
 # %%
 if __name__ == '__main__':
     # %%
-    data_path = r'ZHAOXI-FCS2.0'
-
-    # all_fcs_list = [f.name for f in os.scandir(path=data_path) if
-    #                 (f.is_file() and f.name[-3:] == 'fcs')]  # capture file name
-    # fcs_data = CytoTube(os.path.join(data_path, all_fcs_list[0]), name=all_fcs_list[0].strip('.fcs'))
-
-    tube_data_dic = parallel_process_fsc(data_path)
+    from kde_scatter_plot import hist_sample, kde_plot
+    data_path = r'C:\Users\pan_c\OneDrive\zjw_data\selected_fcs_data\Exp_2022017_cpp358_lib_selected_data'
+    file_names = ['02-Well-B3.fcs', '02-Well-F10.fcs', '02-Well-A1.fcs', '02-Well-F12.fcs', '02-Well-B7.fcs',
+                  '02-Well-A7.fcs', '02-Well-E7.fcs', '02-Well-G6.fcs']
+    # file_names = ['L3_pIPTG_10.fcs', '02-Well-B3.fcs']
+    tube_data_dic = parallel_process_fsc(data_path, file_names)
     file_lis = list(tube_data_dic.keys())
     file_lis.sort()
 
+    list_tube_name = list(tube_data_dic.keys())
+
+    fig = hist_sample({key: tube_data_dic[key].masked_data for key in list_tube_name}, stat_key='ECD-H',
+                      bins_num=400, xlim=(1e2, 1e7))
+
+    axes = fig.get_axes()
+
+    # for ax in axes:
+    #     ax.set_xlim(100, 2e4)
+
+    fig.show()
+    fig.savefig(os.path.join(data_path, 'statistic_cell_counts.svg'))
+
+    #
+    # fig2, ax = plt.subplots(1, 1)
+    # ax.contour(tube_data_dic['02-Well-B3']._raw_data['ECD-H'])
+    # ax.set_xscale('log')
+    # ax.set_yscale('log')
+    #
+    # fig2.show()
     # %%
     import sys
 
