@@ -180,9 +180,10 @@ def parallel_process_fsc(data_path: str, file_list=None):
 if __name__ == '__main__':
     # %%
     from kde_scatter_plot import hist_sample, kde_plot
-    data_path = r'C:\Users\pan_c\OneDrive\zjw_data\selected_fcs_data\Exp_2022017_cpp358_lib_selected_data'
-    file_names = ['02-Well-B3.fcs', '02-Well-F10.fcs', '02-Well-A1.fcs', '02-Well-F12.fcs', '02-Well-B7.fcs',
-                  '02-Well-A7.fcs', '02-Well-E7.fcs', '02-Well-G6.fcs']
+    data_path = r'\\FH_Group_Server\homes\panchu\experiment_data\cytometry\20220213_cymR_SR_library\Exp_20220213_1'
+    file_names = ['CymR_SR_F8.fcs', 'CymR_SR_H12.fcs', 'CymR_SR_F1.fcs', 'CymR_SR_H1.fcs',
+                  'CymR_SR_C10-2.fcs', 'CymR_SR_F2.fcs', 'CymR_SR_G2.fcs',
+                  'CymR_SR_G5.fcs', 'CymR_SR_H2.fcs', 'CymR_SR_H4.fcs']
     # file_names = ['L3_pIPTG_10.fcs', '02-Well-B3.fcs']
     tube_data_dic = parallel_process_fsc(data_path, file_names)
     file_lis = list(tube_data_dic.keys())
@@ -190,8 +191,8 @@ if __name__ == '__main__':
 
     list_tube_name = list(tube_data_dic.keys())
 
-    fig = hist_sample({key: tube_data_dic[key].masked_data for key in list_tube_name}, stat_key='ECD-H',
-                      bins_num=400, xlim=(1e2, 1e7))
+    fig = hist_sample({key: tube_data_dic[key].masked_data for key in list_tube_name}, stat_key='Green-H',
+                      bins_num=400, xlim=(5, 2000))
 
     axes = fig.get_axes()
 
